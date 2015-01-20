@@ -20,6 +20,7 @@
 /**
  * Citation: Beej's Guide to Networking
  */
+#include <errno.h>
 #include <cstdlib>
 #include <stdio.h>         // fprintf(), perror(), fflush()
 #include <stdlib.h>        // atoi()
@@ -140,7 +141,6 @@ peer_args(int argc, char *argv[], char *pname, u_short *port)
 int
 peer_setup(u_short port)
 {
-  
   /* Task 1: YOUR CODE HERE 
    * Fill out the rest of this function.
    */
@@ -168,10 +168,10 @@ peer_setup(u_short port)
 
   // Bind address to socket
   struct sockaddr_in self;
-  memset(&self, 0, sizeof(self));
+  memset(&self, 0, sizeof(sockaddr_in));
   self.sin_family = AF_INET;
   self.sin_addr.s_addr = INADDR_ANY;
-  self.sin_port = port;
+  self.sin_port = port; // network byte order
 
   if (bind(sd, (struct sockaddr *) &self, sizeof(self)) == -1) {
     fprintf(stderr, "Failed to bind socket");
@@ -183,7 +183,7 @@ peer_setup(u_short port)
     fprintf(stderr, "Failed to listen to socket");
     exit(1);
   }
-  
+
   return sd;
 }
 
@@ -199,7 +199,9 @@ peer_setup(u_short port)
 int
 peer_accept(int sd, pte_t *pte)
 {
+
   struct sockaddr_in peer;
+  socklen_t len = sizeof(sockaddr_in);
   
   /* Task 1: YOUR CODE HERE
      Fill out the rest of this function.
@@ -207,25 +209,25 @@ peer_accept(int sd, pte_t *pte)
      peer in the "peer" variable. Also store the socket descriptor
      returned by accept() in the pte */
   /* YOUR CODE HERE */
-  socklen_t len = sizeof(peer);
   pte->pte_sd = accept(sd, (struct sockaddr *) &peer, &len);
   if (pte->pte_sd == -1) {
     fprintf(stderr, "Failed to accept socket");
     exit(1);
   }
-
+    
   /* make the socket wait for PR_LINGER time unit to make sure
      that all data sent has been delivered when closing the socket */
   /* YOUR CODE HERE */
-  int linger_optval = PR_LINGER;
+  struct linger so_linger = {true, PR_LINGER};
   if (setsockopt(
         pte->pte_sd,
         SOL_SOCKET,
         SO_LINGER,
-        &linger_optval,
-        sizeof(linger_optval)) == -1
+        &so_linger,
+        sizeof(so_linger)) == -1
   ) {
-    fprintf(stderr, "Unable to set socket linger option");
+    perror("setsockopt");
+    fprintf(stderr, "Unable to set socket linger option: %i\n", errno);
     exit(1);
   }
 
@@ -258,6 +260,7 @@ peer_ack(int td, char type, peer_t *peer)
   */
   /* YOUR CODE HERE */
   pmsg_t psmg;
+  psmg.pm_vers = PM_VERS;
   psmg.pm_type = type;
 
   if (peer) {
@@ -310,7 +313,7 @@ peer_connect(pte_t *pte)
         SOL_SOCKET,
         SO_REUSEADDR,
         &reuseaddr_optval,
-        sizeof(reuseaddr_optval)) == -1
+        sizeof(int)) == -1
   ) {
     fprintf(stderr, "Failed to configure socket for reuse");
     exit(1);
@@ -447,6 +450,7 @@ main(int argc, char *argv[])
     /* YOUR CODE HERE */
     struct sockaddr_in ephemeral_port_sin;
     socklen_t sin_len = sizeof(ephemeral_port_sin);
+
     if (getsockname(pte[0].pte_sd, (struct sockaddr *) &ephemeral_port_sin, &sin_len) == -1) {
       fprintf(stderr, "Failed to get ephemeral port");
       exit(1);
@@ -474,7 +478,8 @@ main(int argc, char *argv[])
     /* YOUR CODE HERE */
     struct sockaddr_in ephemeral_port_sin;
     socklen_t sin_len = sizeof(sockaddr_in);
-    if (getsockname(pte[0].pte_sd, (struct sockaddr *) &ephemeral_port_sin, &sin_len) == -1) {
+
+    if (getsockname(sd, (struct sockaddr *) &ephemeral_port_sin, &sin_len) == -1) {
       fprintf(stderr, "Failed to get ephemeral port");
       exit(1);
     }
@@ -520,7 +525,8 @@ main(int argc, char *argv[])
        Call select() to wait for any activity on any of the above
        descriptors. */
     /* YOUR CODE HERE */
-    if (select(maxsd, &rset, NULL, NULL, NULL) == -1) {
+
+    if (select(maxsd + 1, &rset, NULL, NULL, NULL) == -1) {
       fprintf(stderr, "Failed during select()");
       exit(1);
     }
