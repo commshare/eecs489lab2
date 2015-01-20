@@ -16,6 +16,11 @@
  *
  * Author: Sugih Jamin (jamin@eecs.umich.edu)
 */
+
+/**
+ * Citation: Beej's Guide to Networking
+ */
+#include <cstdlib>
 #include <stdio.h>         // fprintf(), perror(), fflush()
 #include <stdlib.h>        // atoi()
 #include <assert.h>        // assert()
@@ -141,25 +146,45 @@ peer_setup(u_short port)
    */
   /* create a TCP socket, store the socket descriptor in "sd" */
   /* YOUR CODE HERE */
+  // Create socket
+  int sd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (sd == -1) {
+    fprintf(stderr, "Failed to initialize local socket");
+    exit(1);
+  }
+  
+  // Set socket for address reuse
+  int reuseaddr_optval = 1;
+  if (setsockopt(
+        sd,
+        SOL_SOCKET,
+        SO_REUSEADDR,
+        &reuseaddr_optval,
+        sizeof(reuseaddr_optval)) == -1
+  ) {
+    fprintf(stderr, "Failed to set socket reuse");
+    exit(1);
+  }
 
-  /* initialize socket address */
-  memset((char *) &self, 0, sizeof(struct sockaddr_in));
+  // Bind address to socket
+  struct sockaddr_in self;
+  memset(&self, 0, sizeof(self));
   self.sin_family = AF_INET;
   self.sin_addr.s_addr = INADDR_ANY;
-  self.sin_port = port; // in network byte order
+  self.sin_port = port;
 
-  /* reuse local address so that bind doesn't complain
-     of address already in use. */
-  /* YOUR CODE HERE */
+  if (bind(sd, (struct sockaddr *) &self, sizeof(self)) == -1) {
+    fprintf(stderr, "Failed to bind socket");
+    exit(1);
+  }
 
-  /* bind address to socket */
-  /* YOUR CODE HERE */
-
-  /* listen on socket */
-  /* YOUR CODE HERE */
-
-  /* return socket id. */
-  return (sd);
+  // Listen on socket
+  if (listen(sd, PR_QLEN) == -1) {
+    fprintf(stderr, "Failed to listen to socket");
+    exit(1);
+  }
+  
+  return sd;
 }
 
 /*
@@ -182,10 +207,27 @@ peer_accept(int sd, pte_t *pte)
      peer in the "peer" variable. Also store the socket descriptor
      returned by accept() in the pte */
   /* YOUR CODE HERE */
+  socklen_t len = sizeof(peer);
+  pte->pte_sd = accept(sd, (struct sockaddr *) &peer, &len);
+  if (pte->pte_sd == -1) {
+    fprintf(stderr, "Failed to accept socket");
+    exit(1);
+  }
 
   /* make the socket wait for PR_LINGER time unit to make sure
      that all data sent has been delivered when closing the socket */
   /* YOUR CODE HERE */
+  int linger_optval = PR_LINGER;
+  if (setsockopt(
+        pte->pte_sd,
+        SOL_SOCKET,
+        SO_LINGER,
+        &linger_optval,
+        sizeof(linger_optval)) == -1
+  ) {
+    fprintf(stderr, "Unable to set socket linger option");
+    exit(1);
+  }
 
   /* store peer's address+port# in pte */
   memcpy((char *) &pte->pte_peer.peer_addr, (char *) &peer.sin_addr, 
@@ -209,20 +251,27 @@ peer_accept(int sd, pte_t *pte)
 int
 peer_ack(int td, char type, peer_t *peer)
 {
-  int err;
-
   /* Task 1: YOUR CODE HERE
    * Fill out the rest of this function.
    *
    * Marshall together a message of type pmsg_t.
   */
   /* YOUR CODE HERE */
-  
+  pmsg_t psmg;
+  psmg.pm_type = type;
+
+  if (peer) {
+    psmg.pm_npeers = 1;
+    memcpy(&psmg.pm_peer, peer, sizeof(peer_t)); 
+  } else {
+    psmg.pm_npeers = 0;
+  }
+
   /* send msg to peer connected at socket td,
      close the socket td upon error in sending */
   /* YOUR CODE HERE */
-  
-  return(err);
+  size_t psmg_size = sizeof(pmsg_t); 
+  return send(td, (char *) &psmg, psmg_size, 0);
 }
 
 /*
@@ -238,25 +287,54 @@ peer_ack(int td, char type, peer_t *peer)
 int
 peer_connect(pte_t *pte)
 {
-
   /* Task 2: YOUR CODE HERE
    * Fill out the rest of this function.
   */
   /* create a new TCP socket, store the socket in the pte */
   /* YOUR CODE HERE */
+  pte->pte_sd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+  // Fail because can't open local socket
+  if (pte->pte_sd == -1) {
+    fprintf(stderr, "Failed to initialize local socket");
+    exit(1);
+  }
 
   /* reuse local address so that the call to bind in peer_setup(), to
      bind to the same ephemeral address, doesn't complain of address
      already in use. */
   /* YOUR CODE HERE */
+  int reuseaddr_optval = 1;
+  if (setsockopt(
+        pte->pte_sd,
+        SOL_SOCKET,
+        SO_REUSEADDR,
+        &reuseaddr_optval,
+        sizeof(reuseaddr_optval)) == -1
+  ) {
+    fprintf(stderr, "Failed to configure socket for reuse");
+    exit(1);
+  }
 
   /* initialize socket address with destination peer's IPv4 address and port number . */
   /* YOUR CODE HERE */
+  struct sockaddr_in server;
+  size_t size_server = sizeof(sockaddr_in);
+
+  memset(&server, 0, size_server);
+  server.sin_family = AF_INET;
+  server.sin_port = pte->pte_peer.peer_port;
+
+  struct hostent *sp = gethostbyname(pte->pte_pname);
+  memcpy(&server.sin_addr, sp->h_addr, sp->h_length);
 
   /* connect to destination peer. */
   /* YOUR CODE HERE */
-
-  return(err);
+  if (connect(pte->pte_sd, (struct sockaddr *) &server, size_server) == -1) {
+    fprintf(stderr, "Failed to connect to peer");
+    exit(1);
+  }
+  return 0;
 }  
   
 /*
@@ -279,7 +357,22 @@ peer_recv(int td, pmsg_t *msg)
   */
   /* YOUR CODE HERE */
 
-  return (sizeof(pmsg_t));
+  size_t pmsg_size = sizeof(pmsg_t);
+  size_t bytes_expecting = pmsg_size;
+  char * msg_reader = (char *) msg;
+  do {
+    int bytes_read = recv(td, msg_reader, bytes_expecting, 0);
+    
+    if (bytes_read == -1) {
+      fprintf(stderr, "Bad read from server");
+      exit(1);
+    }
+
+    bytes_expecting -= bytes_read;
+    msg_reader += bytes_read; 
+  } while (bytes_expecting);
+
+  return pmsg_size;
 }
 
 int 
@@ -333,6 +426,12 @@ main(int argc, char *argv[])
      * of the peer table (pte[0]).
     */
     /* YOUR CODE HERE */
+    struct hostent *sp = gethostbyname(pname[0]);
+    if (!sp) {
+      fprintf(stderr, "Couldn't get host by name");
+      exit(1);
+    }
+    memcpy(&pte[0].pte_peer.peer_addr, sp->h_addr_list[0], sizeof(in_addr)); 
 
     /* connect to peer in pte[0] */
     peer_connect(pte);  // Task 2: fill in the peer_connect() function above
@@ -346,6 +445,14 @@ main(int argc, char *argv[])
      * peer's address).
     */
     /* YOUR CODE HERE */
+    struct sockaddr_in ephemeral_port_sin;
+    socklen_t sin_len = sizeof(ephemeral_port_sin);
+    if (getsockname(pte[0].pte_sd, (struct sockaddr *) &ephemeral_port_sin, &sin_len) == -1) {
+      fprintf(stderr, "Failed to get ephemeral port");
+      exit(1);
+    }
+
+    self.sin_port = ephemeral_port_sin.sin_port;
     
     npeers++;
 
@@ -365,6 +472,14 @@ main(int argc, char *argv[])
        (along with peer's address) by copying the same chunk of code
        you just wrote at the end of the if statement block above. */
     /* YOUR CODE HERE */
+    struct sockaddr_in ephemeral_port_sin;
+    socklen_t sin_len = sizeof(sockaddr_in);
+    if (getsockname(pte[0].pte_sd, (struct sockaddr *) &ephemeral_port_sin, &sin_len) == -1) {
+      fprintf(stderr, "Failed to get ephemeral port");
+      exit(1);
+    }
+
+    self.sin_port = ephemeral_port_sin.sin_port;
   }
   
   /* Task 1: YOUR CODE HERE
@@ -372,6 +487,12 @@ main(int argc, char *argv[])
      space to put the name). Use gethostname(), it is sufficient most
      of the time. */
   /* YOUR CODE HERE */
+  memset(pname[1], 0, PR_MAXFQDN);
+  if (gethostname(pname[1], PR_MAXFQDN) == -1) {
+    fprintf(stderr, "Failed to get hostname");
+    exit(1);
+  }
+
 
   /* inform user which port this peer is listening on */
   fprintf(stderr, "This peer address is %s:%d\n",
@@ -399,6 +520,10 @@ main(int argc, char *argv[])
        Call select() to wait for any activity on any of the above
        descriptors. */
     /* YOUR CODE HERE */
+    if (select(maxsd, &rset, NULL, NULL, NULL) == -1) {
+      fprintf(stderr, "Failed during select()");
+      exit(1);
+    }
 
 #ifndef _WIN32
     if (FD_ISSET(STDIN_FILENO, &rset)) {
