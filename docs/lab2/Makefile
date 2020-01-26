@@ -1,8 +1,7 @@
 CC = g++
 MKDEP=makedepend -Y
 LIBS =
-CFLAGS = -g -Wall 
-#-m32
+CFLAGS = -g -Wall -m32
 
 HDRS =
 SRCS =
