@@ -59,25 +59,28 @@
 #define PM_WELCOME   0x1    // Welcome peer
 #define PM_RDIRECT   0x2    // Redirect per
 
+//描述peer地址 ipv4 端口
 typedef struct {            // peer address structure
   struct in_addr peer_addr; // IPv4 address
   u_short peer_port;        // port#, always stored in network byte order
   u_short peer_rsvd;        // reserved field
 } peer_t;
 
+//通信协议
 // Message format:              8 bit  8 bit     16 bit
 typedef struct {            // +------+------+-------------+
-  char pm_vers, pm_type;    // | vers | type |   #peers    |
+  char pm_vers, pm_type;    // | vers | type |   #peers    | 版本 类型 peer数目？
   u_short pm_npeers;        // +------+------+-------------+
-  peer_t pm_peer;           // |     peer ipv4 address     | 
+  peer_t pm_peer;           // |     peer ipv4 address     |  地址
 } pmsg_t;                   // +---------------------------+
                             // |  peer port# |   reserved  |
                             // +---------------------------+
 
+//peer的路由表？？这个是里面的一个条目
 typedef struct {            // peer table entry
-  int pte_sd;               // socket peer is connected at
-  char *pte_pname;          // peer's fqdn
-  peer_t pte_peer;          // peer's address+port#
+  int pte_sd;               // socket peer is connected at 连接到这个peer的socket
+  char *pte_pname;          // peer's fqdn   名字
+  peer_t pte_peer;          // peer's address+port#  代表一个peer类型
 } pte_t;                    // ptbl entry
 
 void
@@ -153,6 +156,7 @@ peer_setup(u_short port)
     exit(1);
   }
   
+  //设置socket可重用端口
   // Set socket for address reuse
   int reuseaddr_optval = 1;
   if (setsockopt(
@@ -187,7 +191,7 @@ peer_setup(u_short port)
   return sd;
 }
 
-/*
+/* 这个也是服务端的操作，之shang前已经bind到了一个socket上监听某个端口，现在在这个端口接受client连接
  * peer_accept: accepts connection on the given socket, sd.
  *
  * On connection, stores the descriptor of the connected socket and
@@ -199,7 +203,7 @@ peer_setup(u_short port)
 int
 peer_accept(int sd, pte_t *pte)
 {
-
+  //这个是收到连接请求的客户端的地址
   struct sockaddr_in peer;
   socklen_t len = sizeof(sockaddr_in);
   
@@ -209,12 +213,14 @@ peer_accept(int sd, pte_t *pte)
      peer in the "peer" variable. Also store the socket descriptor
      returned by accept() in the pte */
   /* YOUR CODE HERE */
+  //pte_sd是与客户端建立连接的socket，发往这个socket就可以与客户端通信了。
   pte->pte_sd = accept(sd, (struct sockaddr *) &peer, &len);
   if (pte->pte_sd == -1) {
     fprintf(stderr, "Failed to accept socket");
     exit(1);
   }
     
+    //TODO 这个选项是关闭socket时，让所有数据的发送完毕
   /* make the socket wait for PR_LINGER time unit to make sure
      that all data sent has been delivered when closing the socket */
   /* YOUR CODE HERE */
@@ -231,6 +237,7 @@ peer_accept(int sd, pte_t *pte)
     exit(1);
   }
 
+ //记录到一个新的链接来的peer
   /* store peer's address+port# in pte */
   memcpy((char *) &pte->pte_peer.peer_addr, (char *) &peer.sin_addr, 
          sizeof(struct in_addr));
@@ -277,7 +284,7 @@ peer_ack(int td, char type, peer_t *peer)
   return send(td, (char *) &psmg, psmg_size, 0);
 }
 
-/*
+/* 创建一个新的socket 并使用这个socket链接到给定的peer
  * peer_connect: creates a new socket to connect to the provided peer.
  * The provided peer's address and port number is stored in the argument
  * of type pte_t (peer table entry type).  See the definition of pte_t
@@ -295,6 +302,7 @@ peer_connect(pte_t *pte)
   */
   /* create a new TCP socket, store the socket in the pte */
   /* YOUR CODE HERE */
+  //创建一个tcp socket
   pte->pte_sd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 
   // Fail because can't open local socket
@@ -307,6 +315,7 @@ peer_connect(pte_t *pte)
      bind to the same ephemeral address, doesn't complain of address
      already in use. */
   /* YOUR CODE HERE */
+  //对本地的socket重用
   int reuseaddr_optval = 1;
   if (setsockopt(
         pte->pte_sd,
@@ -329,9 +338,11 @@ peer_connect(pte_t *pte)
   server.sin_port = pte->pte_peer.peer_port;
 
   struct hostent *sp = gethostbyname(pte->pte_pname);
+  //从hostent 里 构造sockaddr_in
   memcpy(&server.sin_addr, sp->h_addr, sp->h_length);
 
   /* connect to destination peer. */
+  //本地socket连接到远端地址
   /* YOUR CODE HERE */
   if (connect(pte->pte_sd, (struct sockaddr *) &server, size_server) == -1) {
     fprintf(stderr, "Failed to connect to peer");
@@ -384,20 +395,27 @@ main(int argc, char *argv[])
   char c;
   fd_set rset;
   int i, err, sd, maxsd;
+  //可以通过hostent 和 port 连接
   struct hostent *phost;                              // the FQDN of this host
   struct sockaddr_in self;                            // the address of this host
 
   int npeers;
+  //2个，最多被两个peer连接到
   pte_t pte[PR_MAXPEERS], redirected;                 // a 2-entry peer table
+  //一个字符数组，存俩
   char pnamebuf[PR_MAXPEERS*PR_MAXFQDN] = { 0 };  // space to hold 2 FQDNs 
+  //通过这个地址指针从上面的数组里区分俩FQDN
   char *pname[PR_MAXPEERS];                           // pointers to above spaces
   pmsg_t msg;
 
   // init
   npeers=0;
+  //本机自己的网络地址 socketaddr_in 
   memset((char *) &self, 0, sizeof(struct sockaddr_in));
   for (i=0; i < PR_MAXPEERS; i++) {
+    //从字符数组里取第几个赋值到指针数组存储首地址
     pname[i] = &pnamebuf[i*PR_MAXFQDN];
+    //网络地址对应的socket的值，默认-1，无效值
     pte[i].pte_sd = PR_UNINIT_SD;
   }
   
@@ -417,6 +435,7 @@ main(int argc, char *argv[])
   signal(SIGPIPE, SIG_IGN);    /* don't die if peer is dead */
 #endif
 
+  //如果输入了一个 FQDN 
   /* if pname is provided, connect to peer */
   if (*pname[0]) {
 
@@ -429,11 +448,13 @@ main(int argc, char *argv[])
      * of the peer table (pte[0]).
     */
     /* YOUR CODE HERE */
+    //通过FQDN名字获取地址信息，类型是 hostent
     struct hostent *sp = gethostbyname(pname[0]);
     if (!sp) {
       fprintf(stderr, "Couldn't get host by name");
       exit(1);
     }
+    //从hostent获取in_addr
     memcpy(&pte[0].pte_peer.peer_addr, sp->h_addr_list[0], sizeof(in_addr)); 
 
     /* connect to peer in pte[0] */
@@ -447,10 +468,11 @@ main(int argc, char *argv[])
      * socket and store it in the variable "self" (along with the
      * peer's address).
     */
-    /* YOUR CODE HERE */
+    /* YOUR CODE HERE *///TODO
     struct sockaddr_in ephemeral_port_sin;
     socklen_t sin_len = sizeof(ephemeral_port_sin);
 
+    //对本地分配的socket获取其端口
     if (getsockname(pte[0].pte_sd, (struct sockaddr *) &ephemeral_port_sin, &sin_len) == -1) {
       fprintf(stderr, "Failed to get ephemeral port");
       exit(1);
@@ -465,6 +487,7 @@ main(int argc, char *argv[])
             ntohs(pte[0].pte_peer.peer_port));
   }
 
+   //创建一个新的socket，绑定到端口监听
   /* setup and listen on connection */
   sd = peer_setup(self.sin_port);  // Task 1: fill in the peer_setup() function above
   if (!self.sin_port) {
@@ -498,7 +521,7 @@ main(int argc, char *argv[])
     exit(1);
   }
 
-
+  //这个打印的是自己
   /* inform user which port this peer is listening on */
   fprintf(stderr, "This peer address is %s:%d\n",
           pname[1], ntohs(self.sin_port));
@@ -508,13 +531,17 @@ main(int argc, char *argv[])
     maxsd = (sd > pte[0].pte_sd ? sd : pte[0].pte_sd);
     if (maxsd < pte[1].pte_sd) { maxsd = pte[1].pte_sd; }
 
+   //描述符集合清空
     /* set all the descriptors to select() on */
     FD_ZERO(&rset);
 #ifndef _WIN32
+    //关注std输入
     FD_SET(STDIN_FILENO, &rset); // wait for input from std input,
         // Winsock only works with socket and stdin is not a socket
 #endif
+    //关注监听端口
     FD_SET(sd, &rset);           // or the listening socket,
+    //关注自己作为客户端，连接到远端的socket
     for (i = 0; i < PR_MAXPEERS; i++) {
       if (pte[i].pte_sd > 0) {
         FD_SET(pte[i].pte_sd, &rset);  // or the peer connected sockets
@@ -543,15 +570,20 @@ main(int argc, char *argv[])
     }
 #endif
 
+    //这个是监听socket有读写事件
     if (FD_ISSET(sd, &rset)) {
       // a connection is made to this host at the listened to socket
-      if (npeers < PR_MAXPEERS) {
+      //可接收的连接未满
+      if (npeers < PR_MAXPEERS) 
+      {
         /* Peer table is not full.  Accept the peer, send a welcome
          * message.  if we are connected to another peer, also sends
          * back the peer's address+port#
          */
+        //accept 远程的连接请求，accept得到的socket存在pte_sd
         // Task 1: fill in the functions peer_accept() and peer_ack() above
         peer_accept(sd, &pte[npeers]);
+        //通过pte_sd向对方 发送一个ack消息
         err = peer_ack(pte[npeers].pte_sd, PM_WELCOME,
                        (npeers > 0 ? &pte[0].pte_peer : 0));
         err = (err != sizeof(pmsg_t));
@@ -559,6 +591,7 @@ main(int argc, char *argv[])
         pte[npeers].pte_pname = pname[npeers];
 
         /* log connection */
+        //这个打印的是连接过来的客户端的信息
         /* get the host entry info on the connected host. */
         phost = gethostbyaddr((char *) &pte[npeers].pte_peer.peer_addr,
                             sizeof(struct in_addr), AF_INET);
@@ -598,6 +631,7 @@ main(int argc, char *argv[])
       } 
     }
 
+   //遍历自己根据名字和端口，发起链接建立的的peer的路由表，对方有可能发了消息来
     for (i = 0; i < PR_MAXPEERS; i++) {
       if (pte[i].pte_sd > 0 && FD_ISSET(pte[i].pte_sd, &rset)) {
         // a message arrived from a connected peer, receive it
@@ -614,6 +648,7 @@ main(int argc, char *argv[])
           if (msg.pm_vers != PM_VERS) {
             fprintf(stderr, "unknown message version.\n");
           } else {
+            //消息里带了peer的信息
             if (msg.pm_npeers) {
               // if message contains a peer address, inform user of
               // the peer two hops away
@@ -624,7 +659,7 @@ main(int argc, char *argv[])
                        inet_ntoa(msg.pm_peer.peer_addr)),
                       ntohs(msg.pm_peer.peer_port));
             }
-            
+            //如果是被拒掉的，可以通知链接到上面对端的
             if (msg.pm_type == PM_RDIRECT) {
               // inform user if message is a redirection
               fprintf(stderr, "Join redirected, try to connect to the peer above.\n");

@@ -1,4 +1,4 @@
-CC = g++
+aCC = g++
 MKDEP=makedepend -Y
 OS := $(shell uname)
 ifeq ($(OS), Darwin)
